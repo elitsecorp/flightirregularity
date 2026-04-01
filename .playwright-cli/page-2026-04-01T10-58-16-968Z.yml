@@ -1,0 +1,19 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: Flight irregularity analysis
+      - heading "Landing Debrief Studio" [level=1] [ref=e6]
+    - paragraph [ref=e7]: Upload a CSV or ZIP export, extract the landing window, and review approach, flare, touchdown, and recommended improvements in one place.
+  - main [ref=e8]:
+    - complementary [ref=e9]:
+      - heading "Input" [level=2] [ref=e10]
+      - paragraph [ref=e11]: "Accepts a `.csv` or `.zip` containing one CSV."
+      - generic [ref=e12]:
+        - generic [ref=e13] [cursor=pointer]:
+          - generic [ref=e14]: Choose landing file
+          - generic [ref=e15]: ZIP or CSV
+        - button "Analyze landing" [ref=e16] [cursor=pointer]
+    - generic [ref=e18]:
+      - generic [ref=e19]: Ready
+      - heading "Upload a flight export to generate the landing debrief." [level=2] [ref=e20]
+      - paragraph [ref=e21]: The app will identify the final landing window, plot approach/flare/touchdown, and write a brief operational summary beneath the charts.

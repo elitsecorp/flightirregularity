@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Landing Debrief Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Flight irregularity analysis</div>
+        <h1>Landing Debrief Studio</h1>
+      </div>
+      <p class="topbar-copy">
+        Upload a CSV or ZIP export, extract the landing window, and review approach, flare, touchdown, and recommended improvements in one place.
+      </p>
+    </header>
+
+    <main class="workspace">
+      <aside class="panel controls">
+        <h2>Input</h2>
+        <p class="muted">Accepts a `.csv` or `.zip` containing one CSV.</p>
+        <form method="post" enctype="multipart/form-data" class="upload-form">
+          <label class="file-label" for="file">Choose landing file</label>
+          <input id="file" class="file-input" type="file" name="file" accept=".csv,.zip" required>
+          <div class="file-hint">ZIP or CSV. If you upload a ZIP, the app uses the first CSV inside.</div>
+          <button type="submit" class="primary-btn">Analyze landing</button>
+        </form>
+
+        {% if error %}
+          <div class="notice error">{{ error }}</div>
+        {% endif %}
+
+        {% if result %}
+          <section class="mini-metrics">
+            <div class="metric">
+              <span>File</span>
+              <strong>{{ result.filename }}</strong>
+            </div>
+            <div class="metric">
+              <span>Rows</span>
+              <strong>{{ result.rows }}</strong>
+            </div>
+            <div class="metric">
+              <span>Touchdown</span>
+              <strong>{{ result.touchdown_time }}</strong>
+            </div>
+            <div class="metric">
+              <span>Landing rows</span>
+              <strong>{{ result.landing_rows }}</strong>
+            </div>
+            <div class="metric">
+              <span>Approach / flare / touchdown</span>
+              <strong>{{ result.approach_rows }} / {{ result.flare_rows }} / {{ result.touchdown_rows }}</strong>
+            </div>
+          </section>
+          <a class="secondary-btn" href="{{ url_for('download_report', filename=result.filename) }}">Download PDF report</a>
+        {% endif %}
+      </aside>
+
+      <section class="panel results">
+        {% if result %}
+          <div class="headline-row">
+            <div>
+              <div class="eyebrow">Landing assessment</div>
+              <h2>{{ result.briefing.overall }}</h2>
+            </div>
+            <div class="score-chip">Score {{ result.briefing.score }}/100</div>
+          </div>
+
+          <div class="chart-block">
+            <div class="section-title">
+              <h3>Phase profile</h3>
+              <p>Altitude, speed, sink rate, and attitude through the landing window.</p>
+            </div>
+            <div class="chart-frame">
+              {{ result.summary_fig|safe }}
+            </div>
+          </div>
+
+          <div class="chart-block">
+            <div class="section-title">
+              <h3>3D landing state</h3>
+              <p>A state-space view of the landing segment. It is based on time, height, and indicated airspeed.</p>
+            </div>
+            <div class="chart-frame">
+              {{ result.figure_3d|safe }}
+            </div>
+          </div>
+
+          <div class="chart-block">
+            <div class="section-title">
+              <h3>Last 10 seconds replay</h3>
+              <p>Generated runway, local profile, and a proportioned aircraft model to inspect pitch, bank, and vertical response near touchdown.</p>
+              <p class="deviation-note">Green points are within envelope, amber points are cautions, and red points are exceedances based on bank, pitch, sink rate, and g-load thresholds.</p>
+            </div>
+            <div class="chart-frame">
+              {{ result.replay_3d|safe }}
+            </div>
+            <div class="metrics-grid">
+              {% for metric in result.replay_metrics %}
+                <div class="metric-card">
+                  <span>{{ metric.label }}</span>
+                  <strong>{{ metric.value }}</strong>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+
+          <section class="debrief control-technique">
+            <div class="section-title">
+              <h3>Control technique</h3>
+              <p>Bank, pitch, vertical acceleration, sink rate, and a thrust response proxy from N1/N2 during the final landing window.</p>
+            </div>
+
+            <div class="metrics-grid control-grid">
+              {% for metric in result.control_technique.metrics %}
+                <div class="metric-card">
+                  <span>{{ metric.label }}</span>
+                  <strong>{{ metric.value }}</strong>
+                </div>
+              {% endfor %}
+            </div>
+
+            <div class="text-columns">
+              <div>
+                <h4>Technique notes</h4>
+                <ul>
+                  {% for item in result.control_technique.notes %}
+                    <li>{{ item }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+              <div>
+                <h4>Interpretation</h4>
+                <ul>
+                  <li>Bank helps show lateral discipline through the flare.</li>
+                  <li>Pitch shows flare timing and touchdown attitude.</li>
+                  <li>Load factor shows how firm the touchdown likely was.</li>
+                  <li>N1/N2 only provide a thrust proxy; actual thrust lever angle is not recorded in this file.</li>
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <section class="debrief">
+            <div class="section-title">
+              <h3>Debrief text</h3>
+              <p>Generated from the landing segment and checked against the rules extracted from the two manuals.</p>
+            </div>
+
+            <div class="metrics-grid">
+              {% for metric in result.briefing.metrics %}
+                <div class="metric-card">
+                  <span>{{ metric.label }}</span>
+                  <strong>{{ metric.value }}</strong>
+                </div>
+              {% endfor %}
+            </div>
+
+            <div class="section-title">
+              <h3>Rule checks</h3>
+              <p>Each line shows the extracted rule, the source location, and the landing assessment against that rule.</p>
+            </div>
+
+            <div class="rule-list">
+              {% for rule in result.briefing.rule_checks %}
+                <article class="rule-item">
+                  <div class="rule-head">
+                    <strong>{{ rule.title }}</strong>
+                    <span class="rule-status {{ rule.status }}">{{ 'n/a' if rule.status == 'na' else rule.status }}</span>
+                  </div>
+                  <p class="rule-source">{{ rule.source }}</p>
+                  <p class="rule-statement">{{ rule.statement }}</p>
+                  <p class="rule-rationale">{{ rule.rationale }}</p>
+                  {% if rule.details %}
+                    <p class="rule-details">{{ rule.details }}</p>
+                  {% endif %}
+                </article>
+              {% endfor %}
+            </div>
+
+            <div class="text-columns">
+              <div>
+                <h4>Observations</h4>
+                <ul>
+                  {% for item in result.briefing.findings %}
+                    <li>{{ item }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+              <div>
+                <h4>Improvement areas</h4>
+                <ul>
+                  {% for item in result.briefing.improvements %}
+                    <li>{{ item }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            </div>
+
+            <div class="section-title">
+              <h3>Rules extracted</h3>
+              <p>These are the source rules the debrief uses. The source location is shown on every line.</p>
+            </div>
+            <div class="rule-list compact">
+              {% for rule in result.rule_catalog %}
+                <article class="rule-item compact">
+                  <div class="rule-head">
+                    <strong>{{ rule.title }}</strong>
+                  </div>
+                  <p class="rule-source">{{ rule.source }}</p>
+                  <p class="rule-statement">{{ rule.statement }}</p>
+                </article>
+              {% endfor %}
+            </div>
+          </section>
+        {% else %}
+          <div class="empty-state">
+            <div class="eyebrow">Ready</div>
+            <h2>Upload a flight export to generate the landing debrief.</h2>
+            <p>The app will identify the final landing window, plot approach/flare/touchdown, and write a brief operational summary beneath the charts.</p>
+          </div>
+        {% endif %}
+      </section>
+    </main>
+  </div>
+</body>
+</html>
