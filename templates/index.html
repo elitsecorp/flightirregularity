@@ -59,7 +59,11 @@
               <strong>{{ result.approach_rows }} / {{ result.flare_rows }} / {{ result.touchdown_rows }}</strong>
             </div>
           </section>
-          <a class="secondary-btn" href="{{ url_for('download_report', filename=result.filename) }}">Download PDF report</a>
+          {% if result.pdf_available %}
+            <a class="secondary-btn" href="{{ url_for('download_report', filename=result.filename) }}">Download PDF report</a>
+          {% else %}
+            <div class="notice error">PDF export is unavailable in this deployment because reportlab is not installed.</div>
+          {% endif %}
         {% endif %}
       </aside>
 

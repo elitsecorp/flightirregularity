@@ -13,11 +13,17 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from flask import Flask, render_template, request, send_file, abort, url_for
 from werkzeug.utils import secure_filename
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_LEFT
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    REPORTLAB_AVAILABLE = True
+except ModuleNotFoundError:
+    REPORTLAB_AVAILABLE = False
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1125,6 +1131,7 @@ def analyze_file(path: Path) -> dict:
             {"title": rule.title, "statement": rule.statement, "source": rule.source}
             for rule in LANDING_RULES
         ],
+        "pdf_available": REPORTLAB_AVAILABLE,
         "landing_rows": len(segment.landing),
         "approach_rows": len(segment.approach),
         "flare_rows": len(segment.flare),
@@ -1133,6 +1140,9 @@ def analyze_file(path: Path) -> dict:
 
 
 def build_pdf_report(result: dict) -> io.BytesIO:
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("PDF export requires reportlab, which is not installed.")
+
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -1271,6 +1281,8 @@ def download_report(filename: str):
     path = UPLOAD_DIR / filename
     if not path.exists():
         abort(404)
+    if not REPORTLAB_AVAILABLE:
+        abort(503, description="PDF export is unavailable because reportlab is not installed.")
 
     result = analyze_file(path)
     pdf_buffer = build_pdf_report(result)
