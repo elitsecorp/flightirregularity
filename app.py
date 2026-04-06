@@ -83,7 +83,8 @@ def sniff_delimiter(text: str) -> str:
         return ";"
 
 
-def read_dataframe_from_path(path: Path) -> pd.DataFrame:
+def read_dataframe_from_path(path: Path | str) -> pd.DataFrame:
+    path = Path(path)
     if path.suffix.lower() == ".zip":
         with zipfile.ZipFile(path) as zf:
             csv_names = [name for name in zf.namelist() if name.lower().endswith(".csv") and not name.endswith("/")]
@@ -637,9 +638,71 @@ def build_aircraft_model(origin: tuple[float, float, float], pitch_deg: float, r
     ]
 
 
+def build_replay_assessment(row: pd.Series, touchdown_time: pd.Timestamp) -> dict[str, str]:
+    ts = pd.to_datetime(row.get("Timestamp"), errors="coerce")
+    height = pd.to_numeric(pd.Series([row.get("HEIGHT")]), errors="coerce").iloc[0]
+    bank = pd.to_numeric(pd.Series([row.get("ROLL_C")]), errors="coerce").iloc[0]
+    pitch = pd.to_numeric(pd.Series([row.get("PITCH_C")]), errors="coerce").iloc[0]
+    sink = max(0.0, -pd.to_numeric(pd.Series([row.get("IVV_C")]), errors="coerce").iloc[0])
+    g = pd.to_numeric(pd.Series([row.get("VRTG_C")]), errors="coerce").iloc[0]
+    engine_vals = []
+    for candidate in ("N11_C", "N12_C", "TORQ1", "TORQ2", "NP1", "NP2"):
+        if candidate in row.index:
+            value = pd.to_numeric(pd.Series([row.get(candidate)]), errors="coerce").iloc[0]
+            if pd.notna(value):
+                engine_vals.append((candidate, float(value)))
+
+    reasons: list[str] = []
+    severity = "green"
+
+    if pd.notna(bank):
+        if abs(bank) > 6:
+            severity = "red"
+            reasons.append(f"bank {abs(bank):.1f} deg > 6 deg red")
+        elif abs(bank) > 4 and severity != "red":
+            severity = "amber"
+            reasons.append(f"bank {abs(bank):.1f} deg > 4 deg amber")
+
+    if pd.notna(sink):
+        if sink > 1200:
+            severity = "red"
+            reasons.append(f"descent rate {sink:.0f} fpm > 1200 fpm red")
+        elif sink > 1000 and severity != "red":
+            severity = "amber"
+            reasons.append(f"descent rate {sink:.0f} fpm > 1000 fpm amber")
+        if pd.notna(height) and height > 50 and sink < 200 and severity != "red":
+            severity = "amber"
+            reasons.append(f"descent rate {sink:.0f} fpm < 200 fpm above 50 ft amber")
+
+    if pd.notna(pitch) and pd.notna(ts) and ts >= touchdown_time and pitch > 6:
+        severity = "red"
+        reasons.append(f"pitch {pitch:.1f} deg > 6 deg after touchdown red")
+
+    if pd.notna(g) and pd.notna(height) and height <= 1000:
+        if g > 2:
+            severity = "red"
+            reasons.append(f"vertical g {g:.2f} > 2.00 red below 1000 ft")
+        elif g > 1.8 and severity != "red":
+            severity = "amber"
+            reasons.append(f"vertical g {g:.2f} > 1.80 amber below 1000 ft")
+
+    if pd.notna(ts) and ts >= touchdown_time and engine_vals:
+        # Use the strongest available engine column as the thrust proxy.
+        max_engine = max(value for _, value in engine_vals)
+        max_engine_name = max(engine_vals, key=lambda item: item[1])[0]
+        if max_engine > 50 and severity != "red":
+            severity = "amber"
+            reasons.append(f"{max_engine_name} {max_engine:.1f} > 50 at or after touchdown amber")
+
+    return {
+        "severity": severity,
+        "reason": "; ".join(reasons) if reasons else "within envelope",
+    }
+
+
 def build_runway_replay_figure(segment: LandingSegment) -> str:
     landing = segment.landing.copy()
-    replay = landing[(landing["Timestamp"] >= segment.touchdown_time - pd.Timedelta(seconds=10)) & (landing["Timestamp"] <= segment.touchdown_time)].copy()
+    replay = landing[(landing["Timestamp"] >= segment.touchdown_time - pd.Timedelta(seconds=10)) & (landing["Timestamp"] <= segment.touchdown_time + pd.Timedelta(seconds=2))].copy()
     if replay.empty:
         return ""
 
@@ -649,7 +712,6 @@ def build_runway_replay_figure(segment: LandingSegment) -> str:
     height = pd.to_numeric(replay["HEIGHT"], errors="coerce").ffill().bfill().fillna(0.0)
     pitch = pd.to_numeric(replay["PITCH_C"], errors="coerce").fillna(0.0)
     roll = pd.to_numeric(replay["ROLL_C"], errors="coerce").fillna(0.0)
-    load = pd.to_numeric(replay["VRTG_C"], errors="coerce").fillna(1.0)
     heading = pd.to_numeric(replay["HEAD_MAG"], errors="coerce").ffill().bfill()
 
     positions = [0.0] * len(replay)
@@ -694,23 +756,27 @@ def build_runway_replay_figure(segment: LandingSegment) -> str:
         )
     )
 
-    statuses = [classify_replay_point(row) for _, row in replay.iterrows()]
+    assessments = [build_replay_assessment(row, segment.touchdown_time) for _, row in replay.iterrows()]
     path_colors = []
-    amber_x, amber_y, amber_z = [], [], []
-    red_x, red_y, red_z = [], [], []
-    for idx, ((severity, _label), pos, h) in enumerate(zip(statuses, positions, height)):
+    hover_text = []
+    for idx, assessment in enumerate(assessments):
+        severity = assessment["severity"]
+        reason = assessment["reason"]
         if severity == "red":
             path_colors.append("#ef4444")
-            red_x.append(pos)
-            red_y.append(0.0)
-            red_z.append(float(h))
         elif severity == "amber":
             path_colors.append("#f59e0b")
-            amber_x.append(pos)
-            amber_y.append(0.0)
-            amber_z.append(float(h))
         else:
             path_colors.append("#22c55e")
+        hover_text.append(
+            f"{timestamps[idx].strftime('%H:%M:%S')}<br>"
+            f"Height: {float(height.iloc[idx]):.1f} ft<br>"
+            f"Pitch: {float(pitch.iloc[idx]):.1f} deg<br>"
+            f"Bank: {float(roll.iloc[idx]):.1f} deg<br>"
+            f"Sink: {max(0.0, -float(pd.to_numeric(pd.Series([replay.loc[idx, 'IVV_C']]), errors='coerce').iloc[0])):.0f} fpm<br>"
+            f"G: {float(pd.to_numeric(pd.Series([replay.loc[idx, 'VRTG_C']]), errors='coerce').iloc[0]):.2f}<br>"
+            f"<b>{reason}</b>"
+        )
 
     fig.add_trace(
         go.Scatter3d(
@@ -730,11 +796,42 @@ def build_runway_replay_figure(segment: LandingSegment) -> str:
             y=[0.0] * len(replay),
             z=height,
             mode="markers",
-            marker=dict(size=5, color=path_colors, symbol="circle"),
+            marker=dict(size=6, color=path_colors, symbol="circle"),
             name="Deviation markers",
-            hovertemplate="Position=%{x:.0f} ft<br>Height=%{z:.1f} ft<extra></extra>",
+            text=hover_text,
+            hovertemplate="%{text}<extra></extra>",
         )
     )
+
+    amber_x, amber_y, amber_z, amber_text = [], [], [], []
+    red_x, red_y, red_z, red_text = [], [], [], []
+    for idx, (pos, h, assessment) in enumerate(zip(positions, height, assessments)):
+        if assessment["severity"] == "amber":
+            amber_x.append(pos)
+            amber_y.append(0.0)
+            amber_z.append(float(h))
+            amber_text.append(
+                f"{timestamps[idx].strftime('%H:%M:%S')}<br>"
+                f"Height: {float(height.iloc[idx]):.1f} ft<br>"
+                f"Pitch: {float(pitch.iloc[idx]):.1f} deg<br>"
+                f"Bank: {float(roll.iloc[idx]):.1f} deg<br>"
+                f"Sink: {max(0.0, -float(pd.to_numeric(pd.Series([replay.loc[idx, 'IVV_C']]), errors='coerce').iloc[0])):.0f} fpm<br>"
+                f"G: {float(pd.to_numeric(pd.Series([replay.loc[idx, 'VRTG_C']]), errors='coerce').iloc[0]):.2f}<br>"
+                f"<b>{assessment['reason']}</b>"
+            )
+        elif assessment["severity"] == "red":
+            red_x.append(pos)
+            red_y.append(0.0)
+            red_z.append(float(h))
+            red_text.append(
+                f"{timestamps[idx].strftime('%H:%M:%S')}<br>"
+                f"Height: {float(height.iloc[idx]):.1f} ft<br>"
+                f"Pitch: {float(pitch.iloc[idx]):.1f} deg<br>"
+                f"Bank: {float(roll.iloc[idx]):.1f} deg<br>"
+                f"Sink: {max(0.0, -float(pd.to_numeric(pd.Series([replay.loc[idx, 'IVV_C']]), errors='coerce').iloc[0])):.0f} fpm<br>"
+                f"G: {float(pd.to_numeric(pd.Series([replay.loc[idx, 'VRTG_C']]), errors='coerce').iloc[0]):.2f}<br>"
+                f"<b>{assessment['reason']}</b>"
+            )
 
     if amber_x:
         fig.add_trace(
@@ -745,7 +842,8 @@ def build_runway_replay_figure(segment: LandingSegment) -> str:
                 mode="markers",
                 marker=dict(size=7, color="#f59e0b", symbol="diamond"),
                 name="Amber deviation",
-                hoverinfo="skip",
+                text=amber_text,
+                hovertemplate="%{text}<extra>Amber deviation</extra>",
             )
         )
     if red_x:
@@ -757,7 +855,8 @@ def build_runway_replay_figure(segment: LandingSegment) -> str:
                 mode="markers",
                 marker=dict(size=8, color="#ef4444", symbol="x"),
                 name="Red deviation",
-                hoverinfo="skip",
+                text=red_text,
+                hovertemplate="%{text}<extra>Red deviation</extra>",
             )
         )
 
@@ -799,7 +898,7 @@ def build_runway_replay_figure(segment: LandingSegment) -> str:
             opacity=1.0,
             suffix=f" frame {idx}",
         )
-        current_color = "#ef4444" if statuses[idx][0] == "red" else "#f59e0b" if statuses[idx][0] == "amber" else "#22c55e"
+        current_color = "#ef4444" if assessments[idx]["severity"] == "red" else "#f59e0b" if assessments[idx]["severity"] == "amber" else "#22c55e"
         current_point_frame = go.Scatter3d(
             x=[positions[idx]],
             y=[0.0],
@@ -1006,6 +1105,13 @@ def build_replay_metrics(segment: LandingSegment) -> list[dict[str, str]]:
     ]
 
 
+def get_numeric_series(frame: pd.DataFrame, candidates: list[str]) -> pd.Series | None:
+    for name in candidates:
+        if name in frame.columns:
+            return pd.to_numeric(frame[name], errors="coerce")
+    return None
+
+
 def classify_replay_point(row: pd.Series) -> tuple[str, str]:
     sink = float(max(0.0, -pd.to_numeric(pd.Series([row.get("IVV_C")]), errors="coerce").iloc[0]))
     roll = abs(float(pd.to_numeric(pd.Series([row.get("ROLL_C")]), errors="coerce").iloc[0]))
@@ -1027,7 +1133,7 @@ def build_control_technique(segment: LandingSegment) -> dict:
     final_10 = last_airborne[last_airborne["Timestamp"] >= segment.touchdown_time - pd.Timedelta(seconds=10)].copy()
 
     for frame in (final_30, final_10, touchdown):
-        for col in ["ROLL_C", "PITCH_C", "VRTG_C", "IVV_C", "N11_C", "N12_C", "IAS_C"]:
+        for col in ["ROLL_C", "PITCH_C", "VRTG_C", "IVV_C", "N11_C", "N12_C", "TORQ1", "TORQ2", "NP1", "NP2", "IAS_C"]:
             if col in frame.columns:
                 frame[col] = pd.to_numeric(frame[col], errors="coerce")
 
@@ -1039,10 +1145,15 @@ def build_control_technique(segment: LandingSegment) -> dict:
     g_touchdown = float(touchdown["VRTG_C"].iloc[0]) if not touchdown.empty else float("nan")
     sink_peak = float((-final_30["IVV_C"]).max()) if not final_30.empty else float("nan")
 
-    n1_pre = float(final_30["N11_C"].head(max(1, len(final_30) // 2)).mean()) if not final_30.empty else float("nan")
-    n1_touch = float(final_10["N11_C"].mean()) if not final_10.empty else float("nan")
-    n2_pre = float(final_30["N12_C"].head(max(1, len(final_30) // 2)).mean()) if not final_30.empty else float("nan")
-    n2_touch = float(final_10["N12_C"].mean()) if not final_10.empty else float("nan")
+    left_col = get_numeric_series(final_30, ["N11_C", "TORQ1", "NP1"])
+    right_col = get_numeric_series(final_30, ["N12_C", "TORQ2", "NP2"])
+    left_touch = get_numeric_series(final_10, ["N11_C", "TORQ1", "NP1"])
+    right_touch = get_numeric_series(final_10, ["N12_C", "TORQ2", "NP2"])
+
+    n1_pre = float(left_col.head(max(1, len(final_30) // 2)).mean()) if left_col is not None and not final_30.empty else float("nan")
+    n1_touch = float(left_touch.mean()) if left_touch is not None and not final_10.empty else float("nan")
+    n2_pre = float(right_col.head(max(1, len(final_30) // 2)).mean()) if right_col is not None and not final_30.empty else float("nan")
+    n2_touch = float(right_touch.mean()) if right_touch is not None and not final_10.empty else float("nan")
     thrust_proxy_delta = None
     thrust_state = "n/a"
     if not pd.isna(n1_pre) and not pd.isna(n1_touch) and not pd.isna(n2_pre) and not pd.isna(n2_touch):
@@ -1080,7 +1191,7 @@ def build_control_technique(segment: LandingSegment) -> dict:
         else:
             notes.append("Sink rate exceeded the stabilized-approach target.")
     if thrust_state != "n/a":
-        notes.append(f"Thrust proxy from N1/N2 suggests {thrust_state}; actual thrust lever angle is not recorded.")
+        notes.append(f"Thrust proxy from available engine columns suggests {thrust_state}; actual thrust lever angle is not recorded.")
 
     return {
         "metrics": [
@@ -1109,7 +1220,8 @@ def aircraft_trace_list(origin: tuple[float, float, float], pitch_deg: float, ro
     )
 
 
-def analyze_file(path: Path) -> dict:
+def analyze_file(path: Path | str) -> dict:
+    path = Path(path)
     df = normalize_dataframe(read_dataframe_from_path(path))
     segment = segment_landing(df)
     briefing = build_rule_assessment(segment)
